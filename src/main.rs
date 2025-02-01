@@ -11,7 +11,11 @@ use parsers::{find_project_files, get_env_file_keys, process_zsh_history, read_p
 
 fn main() {
     // Load environment variables from .env file.
-    dotenv::dotenv().expect("Failed to load .env file");
+    // Exit gracefully if .env doesn't exist
+    if dotenv::dotenv().is_err() {
+        println!("No .env file found. Exiting early.");
+        return;
+    }
 
     // Load configuration from environment variables.
     let mut config = Config::from_env();
