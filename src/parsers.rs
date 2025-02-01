@@ -81,7 +81,7 @@ fn parse_zsh_history(entry: &str) -> Option<(i64, String, String)> {
     Some((timestamp, exit_code, command))
 }
 
-/// Identifies relevant project files for Rust or Python projects in the current directory.
+/// Identifies relevant project files for various project types in the current directory.
 pub fn find_project_files(max_files: usize) -> Vec<PathBuf> {
     let current_dir = env::current_dir().expect("Failed to get current working directory");
     let mut files_to_include = Vec::new();
@@ -98,6 +98,21 @@ pub fn find_project_files(max_files: usize) -> Vec<PathBuf> {
     if pyproject_toml.exists() {
         files_to_include.push(PathBuf::from("pyproject.toml"));
         files_to_include.extend(find_source_files(&current_dir.join("src"), "py", max_files));
+    }
+
+    // Check for Node.js project files.
+    let package_json = current_dir.join("package.json");
+    if package_json.exists() {
+        files_to_include.push(PathBuf::from("package.json"));
+        files_to_include.extend(find_source_files(&current_dir.join("src"), "js", max_files));
+        files_to_include.extend(find_source_files(&current_dir.join("src"), "ts", max_files));
+    }
+
+    // Check for Go project files.
+    let go_mod = current_dir.join("go.mod");
+    if go_mod.exists() {
+        files_to_include.push(PathBuf::from("go.mod"));
+        files_to_include.extend(find_source_files(&current_dir, "go", max_files));
     }
 
     files_to_include
