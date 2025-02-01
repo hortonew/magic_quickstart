@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
-use reqwest::Client;
+use reqwest::blocking::Client;
 use rev_lines::RevLines;
 use serde_json::json;
 use std::env;
@@ -8,8 +8,7 @@ use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Load environment variables from .env file
     dotenv::dotenv().expect("Failed to load .env file");
     let api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not found in environment variables");
@@ -18,10 +17,9 @@ async fn main() {
         .parse::<usize>()
         .expect("Invalid MAX_FILE_CONTEXT");
     let project_files = find_project_files(max_file_context);
-    println!("Relevant project files:");
-    for file in &project_files {
-        println!("{}", file.display());
-    }
+
+    // print these files inline
+    println!("Relevant project files: {:?}", project_files);
 
     let time_back_hours: i64 = env::var("TIME_BACK_HOURS")
         .unwrap_or_else(|_| "5".to_string())
@@ -129,11 +127,10 @@ async fn main() {
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
-        .await
         .expect("Failed to send request");
 
     // Print the response
-    let response_json: serde_json::Value = response.json().await.expect("Failed to parse response");
+    let response_json: serde_json::Value = response.json().expect("Failed to parse response");
     let markdown_content = response_json["choices"][0]["message"]["content"].as_str().unwrap_or("");
 
     // Write only the markdown content to README_TMP.md
