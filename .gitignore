@@ -1,6 +1,7 @@
 /target
 .env
-README_TMP.md
+README_GENERATED.md
+README_GENERATED*.md
 request.json
 command_history.json
 project_files_content.json
