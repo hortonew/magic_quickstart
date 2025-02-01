@@ -1,5 +1,7 @@
 # Magic Quickstart
 
+A command line app to generate a project quick start guide, using your environment and shell history (if enabled).
+
 ## Prerequisites
 
 - Ensure you have Rust installed. You can install it from [rustup.rs](https://rustup.rs/).
