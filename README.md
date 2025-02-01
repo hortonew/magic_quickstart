@@ -30,3 +30,9 @@ cargo install --path .
   ```
 
 3. Run: `magic_quickstart`
+
+## Examples
+
+- [Go project ](/images/example_go_quickstart.png)
+- [Python project ](/images/example_python_quickstart.png)
+- [Rust project (this one)](/images/example_rust_quickstart.png)
