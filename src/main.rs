@@ -5,7 +5,7 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 #[tokio::main]
@@ -71,6 +71,29 @@ async fn main() {
     file.write_all(json!(command_history).to_string().as_bytes())
         .expect("Failed to write to command_history.json");
 
+    // Read the contents of the project files
+    let mut project_files_content = vec![];
+    for file_path in &project_files {
+        let content = fs::read_to_string(file_path).unwrap_or_else(|_| String::new());
+        project_files_content.push(json!({
+            "file_path": file_path.display().to_string(),
+            "content": content
+        }));
+    }
+
+    // write the file contents that will be sent to the api to a temporary file called: project_files_content.json
+    let mut file = File::create("project_files_content.json").expect("Failed to create project_files_content.json");
+    file.write_all(json!(project_files_content).to_string().as_bytes())
+        .expect("Failed to write to project_files_content.json");
+
+    // Get the structure of the .env file if it exists.
+    let env_file_keys = get_env_file_keys(".env");
+
+    // Write the env file keys to a temporary file called: env_file_keys.json
+    let mut file = File::create("env_file_keys.json").expect("Failed to create env_file_keys.json");
+    file.write_all(json!(env_file_keys).to_string().as_bytes())
+        .expect("Failed to write to env_file_keys.json");
+
     // Create an HTTP client
     let client = Client::new();
     let url = "https://api.openai.com/v1/chat/completions";
@@ -84,7 +107,9 @@ async fn main() {
             { "role": "system", "content": "Only consider relevant commands and files for the detected project type. If it is a Rust project, do not include Node.js or npm-related instructions. If it is a Python project, do not include Rust-related instructions." },
             { "role": "user", "content": format!("My shell history contained this for {:?}: {:?}", time_back_hours, command_history) },
             { "role": "user", "content": format!("My files include: {:?}", project_files) },
-            { "role": "system", "content": "Only output the Markdown content without any explanation, preamble, or additional context. Do not include triple backticks before or after the output." }
+            { "role": "user", "content": format!("File contents: {:?}", project_files_content) },
+            { "role": "user", "content": format!("Environment file structure if it exists: {:?}", env_file_keys) },
+            { "role": "system", "content": "Only output the Markdown content without any explanation, preamble, or additional context. Do not include triple backticks before or after the output.  If an environment structure was provided, also include instructions on setting up the environment.  If a project description was included in any TOML file, include that under the heading." }
         ]
     });
 
@@ -93,7 +118,11 @@ async fn main() {
     file.write_all(request_body.to_string().as_bytes())
         .expect("Failed to write to request.json");
 
-    // Send the request
+    // Send the request if ENABLE_OPENAI is set to true
+    if env::var("ENABLE_OPENAI").unwrap_or("false".to_string()).to_lowercase() != "true" {
+        println!("ENABLE_OPENAI is not set to true. Exiting early.");
+        return;
+    }
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -166,6 +195,7 @@ pub fn find_project_files(max_files: usize) -> Vec<PathBuf> {
 
     files_to_include
 }
+
 /// Finds source files with a given extension in the specified directory, up to a maximum count.
 fn find_source_files(directory: &Path, extension: &str, max_files: usize) -> Vec<PathBuf> {
     let mut found_files = Vec::new();
@@ -187,4 +217,19 @@ fn find_source_files(directory: &Path, extension: &str, max_files: usize) -> Vec
     }
 
     found_files
+}
+
+/// Reads the structure of the .env file and returns the keys without values.
+fn get_env_file_keys(file_path: &str) -> Vec<String> {
+    let file = File::open(file_path).expect("Failed to open .env file");
+    let reader = io::BufReader::new(file);
+    let mut keys = vec![];
+
+    for line in reader.lines().map_while(Result::ok) {
+        if let Some((key, _)) = line.split_once('=') {
+            keys.push(key.trim().to_string());
+        }
+    }
+
+    keys
 }

@@ -2,6 +2,7 @@
 name = "magic_quickstart"
 version = "0.1.0"
 edition = "2021"
+description = "A command line app that uses your environment and command history as context for a quick start guide generation in your README"
 
 [dependencies]
 chrono = "0.4.39"
