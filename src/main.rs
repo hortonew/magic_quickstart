@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use reqwest::blocking::Client;
 use rev_lines::RevLines;
 use serde_json::json;
@@ -9,136 +9,201 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 fn main() {
-    // Load environment variables from .env file
+    // Load environment variables from .env file.
     dotenv::dotenv().expect("Failed to load .env file");
-    let api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not found in environment variables");
-    let max_file_context = env::var("MAX_FILE_COUNT_FOR_CONTEXT")
-        .unwrap_or("5".to_string())
-        .parse::<usize>()
-        .expect("Invalid MAX_FILE_COUNT_FOR_CONTEXT");
-    let project_files = find_project_files(max_file_context);
 
-    // print these files inline
+    // Load configuration from environment variables.
+    let config = Config::from_env();
+
+    // Identify project files to be used for context.
+    let project_files = find_project_files(config.max_file_context);
     println!("Relevant project files: {:?}", project_files);
 
-    let time_back_hours: i64 = env::var("HOURS_OF_SHELL_HISTORY")
-        .unwrap_or_else(|_| "5".to_string())
-        .parse()
-        .expect("Invalid HOURS_OF_SHELL_HISTORY");
-    let cutoff_time = Utc::now() - Duration::hours(time_back_hours);
+    // Calculate the cutoff time for shell history.
+    let cutoff_time = Utc::now() - Duration::hours(config.time_back_hours);
     println!("Cutoff time: {}", cutoff_time);
 
-    // Read the zsh history file
+    // Process the shell history.
     let history_path = format!("{}/.zsh_history", env::var("HOME").unwrap());
-    let file = File::open(&history_path).expect("Failed to open .zsh_history");
-    let rev_lines = RevLines::new(file);
-
-    let mut command_history = vec![];
     println!("History path is: {}", history_path);
+    let command_history = process_zsh_history(&history_path, cutoff_time.timestamp());
 
-    for line in rev_lines {
-        if let Ok(line) = line {
-            if let Some((timestamp, exit_code, command)) = parse_zsh_history(&line) {
-                if timestamp >= cutoff_time.timestamp() {
-                    let command_time = DateTime::from_timestamp(timestamp, 0)
-                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_else(|| timestamp.to_string());
+    // Write command history to a temporary file.
+    write_json_to_file("command_history.json", &json!(command_history));
 
-                    let relative_time = Utc::now().timestamp() - timestamp;
-                    let relative_duration = Duration::seconds(relative_time);
-                    let formatted_relative_time = humantime::format_duration(relative_duration.to_std().unwrap()).to_string();
+    // Read project file contents.
+    let project_files_content = read_project_files_content(&project_files);
+    write_json_to_file("project_files_content.json", &json!(project_files_content));
 
-                    command_history.push(json!({
-                        "timestamp": command_time,
-                        "relative_time": formatted_relative_time,
-                        "exit_code": exit_code,
-                        "command": command
-                    }));
-                }
-            } else {
-                // We reached all invalid timestamps so we can exit early
-                break;
-            }
-        } else {
-            println!("Skipping invalid UTF-8 sequence");
-        }
-    }
-
-    // output the command history to a temporary file called: command_history.json
-    let mut file = File::create("command_history.json").expect("Failed to create command_history.json");
-    file.write_all(json!(command_history).to_string().as_bytes())
-        .expect("Failed to write to command_history.json");
-
-    // Read the contents of the project files
-    let mut project_files_content = vec![];
-    for file_path in &project_files {
-        let content = fs::read_to_string(file_path).unwrap_or_else(|_| String::new());
-        project_files_content.push(json!({
-            "file_path": file_path.display().to_string(),
-            "content": content
-        }));
-    }
-
-    // write the file contents that will be sent to the api to a temporary file called: project_files_content.json
-    let mut file = File::create("project_files_content.json").expect("Failed to create project_files_content.json");
-    file.write_all(json!(project_files_content).to_string().as_bytes())
-        .expect("Failed to write to project_files_content.json");
-
-    // Get the structure of the .env file if it exists.
+    // Read .env file keys.
     let env_file_keys = get_env_file_keys(".env");
+    write_json_to_file("env_file_keys.json", &json!(env_file_keys));
 
-    // Write the env file keys to a temporary file called: env_file_keys.json
-    let mut file = File::create("env_file_keys.json").expect("Failed to create env_file_keys.json");
-    file.write_all(json!(env_file_keys).to_string().as_bytes())
-        .expect("Failed to write to env_file_keys.json");
+    // Build the request payload for OpenAI.
+    let request_body = build_request_payload(
+        config.openai_model.clone(),
+        config.time_back_hours,
+        &command_history,
+        &project_files,
+        &project_files_content,
+        &env_file_keys,
+    );
+    write_json_to_file("request.json", &request_body);
 
-    // Create an HTTP client
-    let client = Client::new();
-    let url = "https://api.openai.com/v1/chat/completions";
-
-    // Construct the request payload
-    let request_body = json!({
-        "model": env::var("OPENAI_MODEL").unwrap_or("gpt-4o".to_string()),
-        "messages": [
-            { "role": "system", "content": "You are a helpful assistant who is excellent at building projects from the ground up and understanding how a user would need a readable quickstart section to get started. Ensure that the guide is strictly relevant to the detected project type." },
-            { "role": "user", "content": "I'm building a project and I want to build a quickstart guide. The commands that I ran are included, but could also contain commands that don't apply to this project. Using these files as reference, build the quickstart guide to my README.md that would just list the commands to get started on this project." },
-            { "role": "system", "content": "Only consider relevant commands and files for the detected project type. If it is a Rust project, do not include Node.js or npm-related instructions. If it is a Python project, do not include Rust-related instructions." },
-            { "role": "user", "content": format!("My shell history contained this for {:?}: {:?}", time_back_hours, command_history) },
-            { "role": "user", "content": format!("My files include: {:?}", project_files) },
-            { "role": "user", "content": format!("File contents: {:?}", project_files_content) },
-            { "role": "user", "content": format!("Environment file structure if it exists: {:?}", env_file_keys) },
-            { "role": "system", "content": "Only output the Markdown content without any explanation, preamble, or additional context. Do not include triple backticks before or after the output.  If an environment structure was provided, also include instructions on setting up the environment.  If a project description was included in any TOML file, include that under the heading." }
-        ]
-    });
-
-    // Write the request_body to request.json
-    let mut file = File::create("request.json").expect("Failed to create request.json");
-    file.write_all(request_body.to_string().as_bytes())
-        .expect("Failed to write to request.json");
-
-    // Send the request if ENABLE_OPENAI is set to true
-    if env::var("ENABLE_OPENAI").unwrap_or("false".to_string()).to_lowercase() != "true" {
+    // Only send the request if ENABLE_OPENAI is set to true.
+    if !config.enable_openai {
         println!("ENABLE_OPENAI is not set to true. Exiting early.");
         return;
     }
+
+    // Send the API request and write the Markdown result.
+    let markdown_content = send_openai_request(&config, &request_body);
+    write_to_file("README_TMP.md", markdown_content.as_bytes());
+}
+
+/// Holds configuration values loaded from environment variables.
+struct Config {
+    openai_api_key: String,
+    max_file_context: usize,
+    time_back_hours: i64,
+    openai_model: String,
+    enable_openai: bool,
+}
+
+impl Config {
+    /// Loads the configuration from environment variables.
+    fn from_env() -> Self {
+        let openai_api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not found in environment variables");
+        let max_file_context = env::var("MAX_FILE_COUNT_FOR_CONTEXT")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse::<usize>()
+            .expect("Invalid MAX_FILE_COUNT_FOR_CONTEXT");
+        let time_back_hours = env::var("HOURS_OF_SHELL_HISTORY")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse::<i64>()
+            .expect("Invalid HOURS_OF_SHELL_HISTORY");
+        let openai_model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+        let enable_openai = env::var("ENABLE_OPENAI").unwrap_or_else(|_| "false".to_string()).to_lowercase() == "true";
+
+        Config {
+            openai_api_key,
+            max_file_context,
+            time_back_hours,
+            openai_model,
+            enable_openai,
+        }
+    }
+}
+
+/// Processes the zsh history file and returns a vector of command entries as JSON values.
+fn process_zsh_history(history_path: &str, cutoff_timestamp: i64) -> Vec<serde_json::Value> {
+    let file = File::open(history_path).expect("Failed to open .zsh_history");
+    let rev_lines = RevLines::new(file);
+    let mut command_history = Vec::new();
+
+    for line_result in rev_lines {
+        match line_result {
+            Ok(line) => {
+                if let Some((timestamp, exit_code, command)) = parse_zsh_history(&line) {
+                    if timestamp >= cutoff_timestamp {
+                        let command_time = match Utc.timestamp_opt(timestamp, 0) {
+                            chrono::LocalResult::Single(time) => time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            _ => "Invalid timestamp".to_string(),
+                        };
+
+                        let elapsed_secs = Utc::now().timestamp() - timestamp;
+                        let relative_duration = Duration::seconds(elapsed_secs);
+                        let formatted_relative_time = humantime::format_duration(relative_duration.to_std().unwrap()).to_string();
+
+                        command_history.push(json!({
+                            "timestamp": command_time,
+                            "relative_time": formatted_relative_time,
+                            "exit_code": exit_code,
+                            "command": command
+                        }));
+                    }
+                } else {
+                    // Exit early if the history entry cannot be parsed.
+                    break;
+                }
+            }
+            Err(_) => {
+                println!("Skipping invalid UTF-8 sequence");
+            }
+        }
+    }
+
+    command_history
+}
+
+/// Writes JSON data to the specified file.
+fn write_json_to_file<P: AsRef<Path>>(file_path: P, data: &serde_json::Value) {
+    let mut file = File::create(&file_path).unwrap_or_else(|_| panic!("Failed to create {}", file_path.as_ref().display()));
+    file.write_all(data.to_string().as_bytes())
+        .unwrap_or_else(|_| panic!("Failed to write to {}", file_path.as_ref().display()));
+}
+
+/// Writes raw bytes to the specified file.
+fn write_to_file<P: AsRef<Path>>(file_path: P, data: &[u8]) {
+    let mut file = File::create(&file_path).unwrap_or_else(|_| panic!("Failed to create {}", file_path.as_ref().display()));
+    file.write_all(data)
+        .unwrap_or_else(|_| panic!("Failed to write to {}", file_path.as_ref().display()));
+}
+
+/// Reads the contents of project files and returns a vector of JSON objects.
+fn read_project_files_content(project_files: &[PathBuf]) -> Vec<serde_json::Value> {
+    project_files
+        .iter()
+        .map(|file_path| {
+            let content = fs::read_to_string(file_path).unwrap_or_default();
+            json!({
+                "file_path": file_path.display().to_string(),
+                "content": content
+            })
+        })
+        .collect()
+}
+
+/// Constructs the JSON request payload for the OpenAI API.
+fn build_request_payload(
+    model: String,
+    time_back_hours: i64,
+    command_history: &[serde_json::Value],
+    project_files: &[PathBuf],
+    project_files_content: &[serde_json::Value],
+    env_file_keys: &[String],
+) -> serde_json::Value {
+    json!({
+        "model": model,
+        "messages": [
+            {"role": "system","content": "You are a helpful assistant specialized in creating concise project quickstart guides. Use the provided context to generate a Markdown README.md that lists only the essential commands to get started. Ensure the guide is strictly relevant to the detected project type (for example, if it is a Rust project, do not include Node.js instructions, and vice versa). Output only Markdown content without any extra explanation, preamble, or code fences."},
+            {"role": "user","content": "Generate a quickstart guide for my project based on the following data. Note that some commands may be irrelevant."},
+            {"role": "user","content": format!("Shell history (last {} hours): {:?}", time_back_hours, command_history)},
+            {"role": "user","content": format!("Project files: {:?}", project_files)},
+            {"role": "user","content": format!("File contents: {:?}", project_files_content)},
+            {"role": "user","content": format!("Environment file keys (if any): {:?}", env_file_keys)}
+        ]
+    })
+}
+
+/// Sends the request to the OpenAI API and returns the Markdown content from the response.
+fn send_openai_request(config: &Config, request_body: &serde_json::Value) -> String {
+    let client = Client::new();
+    let url = "https://api.openai.com/v1/chat/completions";
+
     let response = client
         .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Authorization", format!("Bearer {}", config.openai_api_key))
         .header("Content-Type", "application/json")
-        .json(&request_body)
+        .json(request_body)
         .send()
         .expect("Failed to send request");
 
-    // Print the response
     let response_json: serde_json::Value = response.json().expect("Failed to parse response");
-    let markdown_content = response_json["choices"][0]["message"]["content"].as_str().unwrap_or("");
-
-    // Write only the markdown content to README_TMP.md
-    let mut file = File::create("README_TMP.md").expect("Failed to create README_TMP.md");
-    file.write_all(markdown_content.as_bytes())
-        .expect("Failed to write to README_TMP.md");
+    response_json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string()
 }
 
+/// Parses a line from the zsh history and returns a tuple of (timestamp, exit_code, command).
 fn parse_zsh_history(entry: &str) -> Option<(i64, String, String)> {
     if !entry.starts_with(':') {
         return None;
@@ -173,17 +238,17 @@ fn parse_zsh_history(entry: &str) -> Option<(i64, String, String)> {
 
 /// Identifies relevant project files for Rust or Python projects in the current directory.
 pub fn find_project_files(max_files: usize) -> Vec<PathBuf> {
-    let current_dir = std::env::current_dir().expect("Failed to get current working directory");
+    let current_dir = env::current_dir().expect("Failed to get current working directory");
     let mut files_to_include = Vec::new();
 
-    // Check for Rust project files
+    // Check for Rust project files.
     let cargo_toml = current_dir.join("Cargo.toml");
     if cargo_toml.exists() {
         files_to_include.push(PathBuf::from("Cargo.toml"));
         files_to_include.extend(find_source_files(&current_dir.join("src"), "rs", max_files));
     }
 
-    // Check for Python project files
+    // Check for Python project files.
     let pyproject_toml = current_dir.join("pyproject.toml");
     if pyproject_toml.exists() {
         files_to_include.push(PathBuf::from("pyproject.toml"));
@@ -201,11 +266,8 @@ fn find_source_files(directory: &Path, extension: &str, max_files: usize) -> Vec
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some(extension) {
-                if let Ok(relative_path) = path.strip_prefix(std::env::current_dir().unwrap()) {
-                    found_files.push(relative_path.to_path_buf());
-                } else {
-                    found_files.push(path);
-                }
+                let relative_path = path.strip_prefix(env::current_dir().unwrap()).unwrap_or(&path).to_path_buf();
+                found_files.push(relative_path);
                 if found_files.len() >= max_files {
                     break;
                 }
@@ -216,11 +278,11 @@ fn find_source_files(directory: &Path, extension: &str, max_files: usize) -> Vec
     found_files
 }
 
-/// Reads the structure of the .env file and returns the keys without values.
+/// Reads the structure of the .env file and returns the keys (without values).
 fn get_env_file_keys(file_path: &str) -> Vec<String> {
     let file = File::open(file_path).expect("Failed to open .env file");
     let reader = io::BufReader::new(file);
-    let mut keys = vec![];
+    let mut keys = Vec::new();
 
     for line in reader.lines().map_while(Result::ok) {
         if let Some((key, _)) = line.split_once('=') {
