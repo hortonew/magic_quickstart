@@ -1,11 +1,11 @@
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 use rev_lines::RevLines;
 use serde_json::json;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[tokio::main]
@@ -42,7 +42,7 @@ async fn main() {
         if let Ok(line) = line {
             if let Some((timestamp, exit_code, command)) = parse_zsh_history(&line) {
                 if timestamp >= cutoff_time.timestamp() {
-                    let command_time = NaiveDateTime::from_timestamp_opt(timestamp, 0)
+                    let command_time = DateTime::from_timestamp(timestamp, 0)
                         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                         .unwrap_or_else(|| timestamp.to_string());
 
