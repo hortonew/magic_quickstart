@@ -1,0 +1,5 @@
+/target
+.env
+README_TMP.md
+request.json
+command_history.json
