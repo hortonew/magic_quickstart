@@ -14,36 +14,60 @@ fn main() {
     dotenv::dotenv().expect("Failed to load .env file");
 
     // Load configuration from environment variables.
-    let config = Config::from_env();
+    let mut config = Config::from_env();
 
     // Identify project files to be used for context.
-    let project_files = find_project_files(config.max_file_context);
+    let project_files = if config.include_repository_files {
+        find_project_files(config.max_file_context)
+    } else {
+        vec![]
+    };
     println!("Relevant project files: {:?}", project_files);
 
     // Calculate the cutoff time for shell history.
     let cutoff_time = Utc::now() - Duration::hours(config.time_back_hours);
     println!("Cutoff time for shell history: {}", cutoff_time);
 
-    // Process the shell history.
-    let history_path = format!("{}/.zsh_history", env::var("HOME").unwrap());
-    println!("History path is: {}", history_path);
-    let command_history = process_zsh_history(&history_path, cutoff_time.timestamp());
+    // Process the shell history if INCLUDE_SHELL_HISTORY is true.
+    let command_history = if config.include_shell_history {
+        let history_path = format!("{}/.zsh_history", env::var("HOME").unwrap());
+        println!("History path is: {}", history_path);
+        let history = process_zsh_history(&history_path, cutoff_time.timestamp());
+        if config.debug_request {
+            write_json_to_file("command_history.json", &json!(history));
+        }
+        history
+    } else {
+        vec![]
+    };
 
-    // Write command history to a temporary file if DEBUG_REQUEST is true.
-    if config.debug_request {
-        write_json_to_file("command_history.json", &json!(command_history));
-    }
+    // Read project file contents if INCLUDE_REPOSITORY_FILES is true.
+    let project_files_content = if config.include_repository_files {
+        let content = read_project_files_content(&project_files);
+        if config.debug_request {
+            write_json_to_file("project_files_content.json", &json!(content));
+        }
+        content
+    } else {
+        vec![]
+    };
 
-    // Read project file contents.
-    let project_files_content = read_project_files_content(&project_files);
-    if config.debug_request {
-        write_json_to_file("project_files_content.json", &json!(project_files_content));
-    }
+    // Read .env file keys if INCLUDE_ENV_FILE_KEYS is true.
+    let env_file_keys = if config.include_env_file_keys {
+        let keys = get_env_file_keys(".env");
+        if config.debug_request {
+            write_json_to_file("env_file_keys.json", &json!(keys));
+        }
+        keys
+    } else {
+        vec![]
+    };
 
-    // Read .env file keys.
-    let env_file_keys = get_env_file_keys(".env");
-    if config.debug_request {
-        write_json_to_file("env_file_keys.json", &json!(env_file_keys));
+    // If no context is included, set ENABLE_OPENAI to false and print a message.
+    if command_history.is_empty() && project_files.is_empty() && project_files_content.is_empty() && env_file_keys.is_empty() {
+        config.enable_openai = false;
+        println!("No context provided (project files, file contents, or environment keys). Defaulting to not calling OpenAI.");
+        println!("Set INCLUDE_SHELL_HISTORY, INCLUDE_REPOSITORY_FILES, or INCLUDE_ENV_FILE_KEYS to true to include context.");
     }
 
     // Build the request payload for OpenAI.
@@ -82,6 +106,9 @@ struct Config {
     openai_model: String,
     enable_openai: bool,
     debug_request: bool,
+    include_shell_history: bool,
+    include_repository_files: bool,
+    include_env_file_keys: bool,
 }
 
 impl Config {
@@ -99,6 +126,18 @@ impl Config {
         let openai_model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
         let enable_openai = env::var("ENABLE_OPENAI").unwrap_or_else(|_| "false".to_string()).to_lowercase() == "true";
         let debug_request = env::var("DEBUG_REQUEST").unwrap_or_else(|_| "false".to_string()).to_lowercase() == "true";
+        let include_shell_history = env::var("INCLUDE_SHELL_HISTORY")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true";
+        let include_repository_files = env::var("INCLUDE_REPOSITORY_FILES")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true";
+        let include_env_file_keys = env::var("INCLUDE_ENV_FILE_KEYS")
+            .unwrap_or_else(|_| "false".to_string())
+            .to_lowercase()
+            == "true";
 
         Config {
             openai_api_key,
@@ -107,6 +146,9 @@ impl Config {
             openai_model,
             enable_openai,
             debug_request,
+            include_shell_history,
+            include_repository_files,
+            include_env_file_keys,
         }
     }
 }
