@@ -12,19 +12,19 @@ fn main() {
     // Load environment variables from .env file
     dotenv::dotenv().expect("Failed to load .env file");
     let api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not found in environment variables");
-    let max_file_context = env::var("MAX_FILE_CONTEXT")
+    let max_file_context = env::var("MAX_FILE_COUNT_FOR_CONTEXT")
         .unwrap_or("5".to_string())
         .parse::<usize>()
-        .expect("Invalid MAX_FILE_CONTEXT");
+        .expect("Invalid MAX_FILE_COUNT_FOR_CONTEXT");
     let project_files = find_project_files(max_file_context);
 
     // print these files inline
     println!("Relevant project files: {:?}", project_files);
 
-    let time_back_hours: i64 = env::var("TIME_BACK_HOURS")
+    let time_back_hours: i64 = env::var("HOURS_OF_SHELL_HISTORY")
         .unwrap_or_else(|_| "5".to_string())
         .parse()
-        .expect("Invalid TIME_BACK_HOURS");
+        .expect("Invalid HOURS_OF_SHELL_HISTORY");
     let cutoff_time = Utc::now() - Duration::hours(time_back_hours);
     println!("Cutoff time: {}", cutoff_time);
 
