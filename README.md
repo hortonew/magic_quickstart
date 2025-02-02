@@ -5,6 +5,7 @@ A command line app to generate a project quick start guide, using your environme
 ## Prerequisites
 
 - Ensure you have Rust installed. You can install it from [rustup.rs](https://rustup.rs/).
+- [OpenAPI API Key](https://platform.openai.com/api-keys)
 
 
 ## Build and Install
@@ -63,4 +64,5 @@ HISTFILE="$HOME/.zsh_history"
 HISTSIZE=10000000
 SAVEHIST=10000000
 HIST_STAMPS="yyyy-mm-dd"
+HISTORY_IGNORE="(ls|pwd|history|exit)*"
 ```
